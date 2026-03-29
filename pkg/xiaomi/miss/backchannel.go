@@ -10,7 +10,7 @@ import (
 )
 
 func (p *Producer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
-	if err := p.client.StartSpeaker(); err != nil {
+	if err := p.stream.session.startSpeaker(); err != nil {
 		return err
 	}
 	// TODO: check this!!!
@@ -22,7 +22,7 @@ func (p *Producer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	case core.CodecPCMA:
 		var buf []byte
 
-		if p.client.SpeakerCodec() == codecPCM {
+		if p.stream.session.speakerCodec() == codecPCM {
 			dst := &core.Codec{Name: core.CodecPCML, ClockRate: 8000}
 			transcode := pcm.Transcode(dst, track.Codec)
 
@@ -31,7 +31,7 @@ func (p *Producer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 				const size = 2 * 8000 * 0.040 // 16bit 40ms
 				for len(buf) >= size {
 					p.Send += size
-					_ = p.client.WriteAudio(codecPCM, buf[:size])
+					_ = p.stream.session.writeAudio(codecPCM, buf[:size])
 					buf = buf[size:]
 				}
 			}
@@ -41,13 +41,13 @@ func (p *Producer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 				const size = 8000 * 0.040 // 8bit 40 ms
 				for len(buf) >= size {
 					p.Send += size
-					_ = p.client.WriteAudio(codecPCMA, buf[:size])
+					_ = p.stream.session.writeAudio(codecPCMA, buf[:size])
 					buf = buf[size:]
 				}
 			}
 		}
 	case core.CodecOpus:
-		if p.client.SpeakerCodec() == codecOPUS {
+		if p.stream.session.speakerCodec() == codecOPUS {
 			var buf []byte
 			sender.Handler = func(pkt *rtp.Packet) {
 				if buf == nil {
@@ -56,14 +56,14 @@ func (p *Producer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 					// convert two 20ms to one 40ms
 					buf = opus.JoinFrames(buf, pkt.Payload)
 					p.Send += len(buf)
-					_ = p.client.WriteAudio(codecOPUS, buf)
+					_ = p.stream.session.writeAudio(codecOPUS, buf)
 					buf = nil
 				}
 			}
 		} else {
 			sender.Handler = func(pkt *rtp.Packet) {
 				p.Send += len(pkt.Payload)
-				_ = p.client.WriteAudio(codecOPUS, pkt.Payload)
+				_ = p.stream.session.writeAudio(codecOPUS, pkt.Payload)
 			}
 		}
 	}

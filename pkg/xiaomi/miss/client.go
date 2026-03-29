@@ -126,6 +126,21 @@ func (c *Client) Version() string {
 	return fmt.Sprintf("%s (%s)", c.Conn.Version(), c.model)
 }
 
+// Model returns the camera model string.
+func (c *Client) Model() string {
+	return c.model
+}
+
+// IsDafangLike returns true for models that use the dafang firmware
+// protocol and do not support standard dual-channel commands.
+func (c *Client) IsDafangLike() bool {
+	switch c.model {
+	case ModelDafang, ModelXiaofang:
+		return true
+	}
+	return false
+}
+
 func (c *Client) WriteCommand(data []byte) error {
 	data, err := crypto.Encode(data, c.key)
 	if err != nil {
@@ -161,23 +176,7 @@ func (c *Client) StartMedia(channel, quality, audio string) error {
 		)
 	}
 
-	// 0 - auto, 1 - sd, 2 - hd, default - hd
-	switch quality {
-	case "", "hd":
-		// Some models have broken codec settings in quality 3.
-		// Some models have low quality in quality 2.
-		// Different models require different default quality settings.
-		switch c.model {
-		case ModelC200, ModelC300:
-			quality = "3"
-		default:
-			quality = "2"
-		}
-	case "sd":
-		quality = "1"
-	case "auto":
-		quality = "0"
-	}
+	quality = c.normalizeQuality(quality)
 
 	if audio == "" {
 		audio = "1"
@@ -191,6 +190,37 @@ func (c *Client) StartMedia(channel, quality, audio string) error {
 		data = fmt.Appendf(data, `{"videoquality":-1,"videoquality2":%s,"enableaudio":%s}`, quality, audio)
 	}
 	return c.WriteCommand(data)
+}
+
+// StartMediaDual starts both channel 0 and channel 1 in a single command.
+func (c *Client) StartMediaDual(quality0, quality1, audio string) error {
+	quality0 = c.normalizeQuality(quality0)
+	quality1 = c.normalizeQuality(quality1)
+	if audio == "" {
+		audio = "1"
+	}
+	data := binary.BigEndian.AppendUint32(nil, cmdVideoStart)
+	data = fmt.Appendf(data, `{"videoquality":%s,"videoquality2":%s,"enableaudio":%s}`, quality0, quality1, audio)
+	return c.WriteCommand(data)
+}
+
+// normalizeQuality converts user-facing quality strings to protocol values.
+func (c *Client) normalizeQuality(quality string) string {
+	// 0 - auto, 1 - sd, 2 - hd, default - hd
+	switch quality {
+	case "", "hd":
+		switch c.model {
+		case ModelC200, ModelC300:
+			return "3"
+		default:
+			return "2"
+		}
+	case "sd":
+		return "1"
+	case "auto":
+		return "0"
+	}
+	return quality
 }
 
 func (c *Client) StopMedia() error {
@@ -243,6 +273,17 @@ func (c *Client) ReadPacket() (*Packet, error) {
 		Payload:  payload,
 	}
 
+	// Parse channel from header byte 28 for dual-channel cameras.
+	// Valid values: 0 or 1, with frame type in hdr[24:28] being <= 3.
+	if len(hdr) >= 29 {
+		frameType := binary.LittleEndian.Uint32(hdr[24:28])
+		ch := hdr[28]
+		if ch <= 1 && frameType <= 3 {
+			pkt.Channel = ch
+			pkt.ChannelOK = true
+		}
+	}
+
 	switch c.model {
 	case ModelDafang, ModelXiaofang, ModelLoockV2:
 		// Dafang has ts in sec
@@ -276,6 +317,8 @@ type Packet struct {
 	Sequence  uint32
 	Flags     uint32
 	Timestamp uint64 // msec
+	Channel   uint8  // video channel (0 or 1), parsed from header
+	ChannelOK bool   // true if Channel was successfully parsed
 	//TimestampS uint32
 	//Reserved uint32
 	Payload []byte

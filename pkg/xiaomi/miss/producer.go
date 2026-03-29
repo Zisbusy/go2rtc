@@ -14,11 +14,11 @@ import (
 
 type Producer struct {
 	core.Connection
-	client *Client
+	stream *stream
 }
 
 func Dial(rawURL string) (core.Producer, error) {
-	client, err := NewClient(rawURL)
+	sess, err := getOrCreateSession(rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -26,15 +26,23 @@ func Dial(rawURL string) (core.Producer, error) {
 	u, _ := url.Parse(rawURL)
 	query := u.Query()
 
-	err = client.StartMedia(query.Get("channel"), query.Get("subtype"), query.Get("audio"))
+	var channel uint8
+	if query.Get("channel") == "1" {
+		channel = 1
+	}
+
+	st := sess.openStream(channel)
+
+	audio := query.Get("audio")
+	err = sess.startMedia(channel, query.Get("subtype"), audio)
 	if err != nil {
-		_ = client.Close()
+		_ = st.Close()
 		return nil, err
 	}
 
-	medias, err := probe(client, query.Get("audio") != "0")
+	medias, err := probe(st, audio != "0")
 	if err != nil {
-		_ = client.Close()
+		_ = st.Close()
 		return nil, err
 	}
 
@@ -42,27 +50,30 @@ func Dial(rawURL string) (core.Producer, error) {
 		Connection: core.Connection{
 			ID:         core.NewID(),
 			FormatName: "xiaomi/miss",
-			Protocol:   client.Protocol(),
-			RemoteAddr: client.RemoteAddr().String(),
-			UserAgent:  client.Version(),
+			Protocol:   sess.client.Protocol(),
+			RemoteAddr: st.RemoteAddr().String(),
+			UserAgent:  sess.client.Version(),
 			Medias:     medias,
-			Transport:  client,
+			Transport:  st,
 		},
-		client: client,
+		stream: st,
 	}, nil
 }
 
-func probe(client *Client, audio bool) ([]*core.Media, error) {
-	_ = client.SetDeadline(time.Now().Add(15 * time.Second))
+func probe(st *stream, audio bool) ([]*core.Media, error) {
+	_ = st.SetDeadline(time.Now().Add(15 * time.Second))
 
 	var vcodec, acodec *core.Codec
 
 	for {
-		pkt, err := client.ReadPacket()
+		pkt, err := st.ReadPacket()
 		if err != nil {
+			// If we got video but timed out waiting for audio, that's OK
+			// for dual-channel where audio may only go to one stream.
 			if vcodec != nil {
-				err = fmt.Errorf("no audio")
-			} else if acodec != nil {
+				break
+			}
+			if acodec != nil {
 				err = fmt.Errorf("no video")
 			}
 			return nil, fmt.Errorf("xiaomi: probe: %w", err)
@@ -98,7 +109,7 @@ func probe(client *Client, audio bool) ([]*core.Media, error) {
 		}
 	}
 
-	_ = client.SetDeadline(time.Time{})
+	_ = st.SetDeadline(time.Time{})
 
 	medias := []*core.Media{
 		{
@@ -131,8 +142,7 @@ func (p *Producer) Start() error {
 	var audioTS uint32
 
 	for {
-		_ = p.client.SetDeadline(time.Now().Add(10 * time.Second))
-		pkt, err := p.client.ReadPacket()
+		pkt, err := p.stream.ReadPacket()
 		if err != nil {
 			return err
 		}
@@ -194,7 +204,6 @@ func (p *Producer) Start() error {
 }
 
 func (p *Producer) Stop() error {
-	_ = p.client.StopMedia()
 	return p.Connection.Stop()
 }
 

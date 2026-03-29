@@ -56,6 +56,20 @@ var tokens map[string]string
 var clouds map[string]*xiaomi.Cloud
 var cloudsMu sync.Mutex
 
+// missCred caches MISS authentication credentials so the second channel of a
+// dual-channel camera can skip the cloud API call.
+type missCred struct {
+	clientPublic  string
+	clientPrivate string
+	devicePublic  string
+	sign          string
+	vendor        string
+	uid           string // only for TUTK
+}
+
+var missCreds = map[string]missCred{}
+var missCredsMu sync.Mutex
+
 func getCloud(userID string) (*xiaomi.Cloud, error) {
 	cloudsMu.Lock()
 	defer cloudsMu.Unlock()
@@ -150,12 +164,33 @@ func getLegacyURL(url *url.URL) (string, error) {
 }
 
 func getMissURL(url *url.URL) (string, error) {
+	query := url.Query()
+	region, _ := url.User.Password()
+
+	// Check credential cache first. The second channel of a dual-channel
+	// camera can reuse the same credentials without a cloud API call.
+	cacheKey := url.User.Username() + ":" + region + ":" + query.Get("did")
+	missCredsMu.Lock()
+	if cred, ok := missCreds[cacheKey]; ok {
+		missCredsMu.Unlock()
+		query.Set("client_public", cred.clientPublic)
+		query.Set("client_private", cred.clientPrivate)
+		query.Set("device_public", cred.devicePublic)
+		query.Set("sign", cred.sign)
+		query.Set("vendor", cred.vendor)
+		if cred.uid != "" {
+			query.Set("uid", cred.uid)
+		}
+		url.RawQuery = query.Encode()
+		return url.String(), nil
+	}
+	missCredsMu.Unlock()
+
 	clientPublic, clientPrivate, err := crypto.GenerateKey()
 	if err != nil {
 		return "", err
 	}
 
-	query := url.Query()
 	params := fmt.Sprintf(
 		`{"app_pubkey":"%x","did":"%s","support_vendors":"TUTK_CS2_MTP"}`,
 		clientPublic, query.Get("did"),
@@ -183,15 +218,33 @@ func getMissURL(url *url.URL) (string, error) {
 		return "", err
 	}
 
-	query.Set("client_public", hex.EncodeToString(clientPublic))
-	query.Set("client_private", hex.EncodeToString(clientPrivate))
+	cpub := hex.EncodeToString(clientPublic)
+	cpriv := hex.EncodeToString(clientPrivate)
+	vendor := getVendorName(v.Vendor.ID)
+
+	query.Set("client_public", cpub)
+	query.Set("client_private", cpriv)
 	query.Set("device_public", v.PublicKey)
 	query.Set("sign", v.Sign)
-	query.Set("vendor", getVendorName(v.Vendor.ID))
+	query.Set("vendor", vendor)
 
+	var uid string
 	if v.Vendor.ID == 1 {
-		query.Set("uid", v.Vendor.Params.UID)
+		uid = v.Vendor.Params.UID
+		query.Set("uid", uid)
 	}
+
+	// Cache the credentials for dual-channel reuse.
+	missCredsMu.Lock()
+	missCreds[cacheKey] = missCred{
+		clientPublic:  cpub,
+		clientPrivate: cpriv,
+		devicePublic:  v.PublicKey,
+		sign:          v.Sign,
+		vendor:        vendor,
+		uid:           uid,
+	}
+	missCredsMu.Unlock()
 
 	url.RawQuery = query.Encode()
 	return url.String(), nil
