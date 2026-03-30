@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/internal/api"
 	"github.com/AlexxIT/go2rtc/internal/app"
@@ -57,7 +58,8 @@ var clouds map[string]*xiaomi.Cloud
 var cloudsMu sync.Mutex
 
 // missCred caches MISS authentication credentials so the second channel of a
-// dual-channel camera can skip the cloud API call.
+// dual-channel camera can skip the cloud API call. Credentials are invalidated
+// after missCredTTL to ensure stale credentials don't prevent reconnection.
 type missCred struct {
 	clientPublic  string
 	clientPrivate string
@@ -65,7 +67,10 @@ type missCred struct {
 	sign          string
 	vendor        string
 	uid           string // only for TUTK
+	created       time.Time
 }
+
+const missCredTTL = 30 * time.Second
 
 var missCreds = map[string]missCred{}
 var missCredsMu sync.Mutex
@@ -171,7 +176,7 @@ func getMissURL(url *url.URL) (string, error) {
 	// camera can reuse the same credentials without a cloud API call.
 	cacheKey := url.User.Username() + ":" + region + ":" + query.Get("did")
 	missCredsMu.Lock()
-	if cred, ok := missCreds[cacheKey]; ok {
+	if cred, ok := missCreds[cacheKey]; ok && time.Since(cred.created) < missCredTTL {
 		missCredsMu.Unlock()
 		query.Set("client_public", cred.clientPublic)
 		query.Set("client_private", cred.clientPrivate)
@@ -243,6 +248,7 @@ func getMissURL(url *url.URL) (string, error) {
 		sign:          v.Sign,
 		vendor:        vendor,
 		uid:           uid,
+		created:       time.Now(),
 	}
 	missCredsMu.Unlock()
 

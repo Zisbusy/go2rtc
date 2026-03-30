@@ -452,6 +452,10 @@ func (s *session) shutdown() {
 			st.close()
 		}
 
+		// Send VideoStop before closing so the camera releases the
+		// connection slot. Without this, the camera may think the
+		// session is still active and refuse new connections.
+		_ = s.client.StopMedia()
 		_ = s.client.Close()
 
 		sessionMu.Lock()
