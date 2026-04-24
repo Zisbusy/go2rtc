@@ -1,4 +1,4 @@
-name: Build and Push
+name: Build and Export Docker Tar Files
 
 # 触发工作流的事件：
 # 1. 手动触发 (workflow_dispatch)
@@ -57,30 +57,43 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: go2rtc_linux_armv6, path: go2rtc }
 
-  # Job 2: 构建标准 Docker 镜像 (多架构)
-  docker-master:
-    name: Build docker master
+  # Job 2: 为每个平台构建 Docker 镜像并导出为 tar 文件
+  build-docker-tar:
+    name: Build Docker tar for ${{ matrix.platform }}
     runs-on: ubuntu-latest
-    outputs:
-      image_tags: ${{ steps.meta.outputs.tags }}
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/386
+          - linux/arm/v6
+          - linux/arm/v7
+          - linux/arm64/v8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 自动推断镜像标签和元数据
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            # 如果不是 Fork 的仓库，则推送到 DockerHub
-            name=${{ github.repository }},enable=${{ github.event.repository.fork == false }}
-            # 始终推送到 GitHub Container Registry (GHCR)
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}},enable=false
-            type=match,pattern=v(.*),group=1
+      # 设置平台相关的变量
+      - name: Set platform variables
+        id: platform_vars
+        run: |
+          case "${{ matrix.platform }}" in
+            "linux/amd64") 
+              echo "platform_tag=amd64" >> $GITHUB_OUTPUT
+              ;;
+            "linux/386") 
+              echo "platform_tag=386" >> $GITHUB_OUTPUT
+              ;;
+            "linux/arm/v6") 
+              echo "platform_tag=armv6" >> $GITHUB_OUTPUT
+              ;;
+            "linux/arm/v7") 
+              echo "platform_tag=armv7" >> $GITHUB_OUTPUT
+              ;;
+            "linux/arm64/v8") 
+              echo "platform_tag=arm64" >> $GITHUB_OUTPUT
+              ;;
+          esac
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -88,60 +101,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建并推送多架构镜像
-      - name: Build and push multi-arch image
-        id: build-multi-arch
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          # 支持多种架构
-          platforms: |
-            linux/amd64
-            linux/386
-            linux/arm/v6
-            linux/arm/v7
-            linux/arm64/v8
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # 为每个平台单独构建并导出为tar文件
-      - name: Build and export AMD64 image
-        if: github.event_name != 'pull_request'
+      # 构建 Docker 镜像并导出为 tar 文件
+      - name: Build Docker image and export as tar
         run: |
-          docker buildx build --platform linux/amd64 -t go2rtc-amd64:${{ github.sha }} -f docker/Dockerfile --load .
-          docker save -o /tmp/go2rtc-linux-amd64.tar go2rtc-amd64:${{ github.sha }}
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --output type=docker,tar=true,dest=go2rtc_${{ steps.platform_vars.outputs.platform_tag }}.tar \
+            -f docker/Dockerfile .
 
-      - name: Build and export ARM64 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker buildx build --platform linux/arm64 -t go2rtc-arm64:${{ github.sha }} -f docker/Dockerfile --load .
-          docker save -o /tmp/go2rtc-linux-arm64.tar go2rtc-arm64:${{ github.sha }}
-
-      - name: Build and export ARMv7 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker buildx build --platform linux/arm/v7 -t go2rtc-armv7:${{ github.sha }} -f docker/Dockerfile --load .
-          docker save -o /tmp/go2rtc-linux-armv7.tar go2rtc-armv7:${{ github.sha }}
-
-      - name: Build and export ARMv6 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker buildx build --platform linux/arm/v6 -t go2rtc-armv6:${{ github.sha }} -f docker/Dockerfile --load .
-          docker save -o /tmp/go2rtc-linux-armv6.tar go2rtc-armv6:${{ github.sha }}
-
-      - name: Build and export 386 image
-        if: github.event_name != 'pull_request'
-        run: |
-          docker buildx build --platform linux/386 -t go2rtc-386:${{ github.sha }} -f docker/Dockerfile --load .
-          docker save -o /tmp/go2rtc-linux-386.tar go2rtc-386:${{ github.sha }}
-
-      - name: Upload Docker images as artifacts
-        if: github.event_name != 'pull_request'
+      # 上传 tar 文件作为 artifact
+      - name: Upload Docker tar file
         uses: actions/upload-artifact@v4
         with:
-          name: docker-images-tar
-          path: /tmp/go2rtc-*.tar
+          name: go2rtc_docker_${{ steps.platform_vars.outputs.platform_tag }}
+          path: go2rtc_${{ steps.platform_vars.outputs.platform_tag }}.tar
