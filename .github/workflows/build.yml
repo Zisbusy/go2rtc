@@ -1,4 +1,4 @@
-name: Build Only (No Push)
+name: Build and Export Docker Images (for Testing)
 
 on:
   workflow_dispatch:
@@ -8,13 +8,10 @@ on:
     tags:
       - 'v*'
 
-# jobs:
-#   build-binaries: # 完全移除此job，因为我们不需要编译Go二进制文件
-#     ...
-
 jobs:
+
   docker-master:
-    name: Build docker master
+    name: Build and export docker master
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,16 +34,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 移除登录步骤，因为不推送
-      # - name: Login to GitHub Container Registry
-      #   if: github.event_name == 'push'
-      #   uses: docker/login-action@v3
-      #   with:
-      #     registry: ghcr.io
-      #     username: ${{ github.actor }}
-      #     password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build only (no push)
+      # 构建镜像，但不推送
+      - name: Build image (no push)
+        id: build_image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -57,15 +47,38 @@ jobs:
             linux/arm/v6
             linux/arm/v7
             linux/arm64/v8
-          # 关键更改：始终设置 push: false
           push: false
+          # 输出到本地docker daemon，以便后续save
+          load: true 
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # 获取构建的镜像ID，用于docker save
+      - name: Get Image ID
+        id: get_image_id
+        run: |
+          # 假设镜像标签是唯一的，或者我们只关心一个tag
+          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta.outputs.json).tags[0] }})
+          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
+          echo "Found image ID: $IMAGE_ID"
+
+      # 导出镜像为tar文件
+      - name: Save image to tar
+        run: |
+          # 使用获取到的镜像ID进行导出，避免tag冲突
+          docker save -o go2rtc_docker_master_image.tar ${{ steps.get_image_id.outputs.image_id }}
+      
+      # 上传tar文件作为artifact
+      - name: Upload Docker Image Tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: go2rtc-docker-master-image-tar
+          path: go2rtc_docker_master_image.tar
+
   docker-hardware:
-    name: Build docker hardware
+    name: Build and export docker hardware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -91,30 +104,43 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 移除登录步骤，因为不推送
-      # - name: Login to GitHub Container Registry
-      #   if: github.event_name == 'push'
-      #   uses: docker/login-action@v3
-      #   with:
-      #     registry: ghcr.io
-      #     username: ${{ github.actor }}
-      #     password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build only (no push)
+      # 构建镜像，但不推送
+      - name: Build image (no push)
+        id: build_image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/hardware.Dockerfile
           platforms: linux/amd64
-          # 关键更改：始终设置 push: false
           push: false
+          load: true
           tags: ${{ steps.meta-hw.outputs.tags }}
           labels: ${{ steps.meta-hw.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # 获取构建的镜像ID
+      - name: Get Image ID
+        id: get_image_id
+        run: |
+          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-hw.outputs.json).tags[0] }})
+          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
+          echo "Found image ID: $IMAGE_ID"
+
+      # 导出镜像为tar文件
+      - name: Save image to tar
+        run: |
+          docker save -o go2rtc_docker_hardware_image.tar ${{ steps.get_image_id.outputs.image_id }}
+      
+      # 上传tar文件作为artifact
+      - name: Upload Docker Image Tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: go2rtc-docker-hardware-image-tar
+          path: go2rtc_docker_hardware_image.tar
+
   docker-rockchip:
-    name: Build docker rockchip
+    name: Build and export docker rockchip
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -140,24 +166,37 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 移除登录步骤，因为不推送
-      # - name: Login to GitHub Container Registry
-      #   if: github.event_name == 'push'
-      #   uses: docker/login-action@v3
-      #   with:
-      #     registry: ghcr.io
-      #     username: ${{ github.actor }}
-      #     password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build only (no push)
+      # 构建镜像，但不推送
+      - name: Build image (no push)
+        id: build_image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/rockchip.Dockerfile
           platforms: linux/arm64
-          # 关键更改：始终设置 push: false
           push: false
+          load: true
           tags: ${{ steps.meta-rk.outputs.tags }}
           labels: ${{ steps.meta-rk.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 获取构建的镜像ID
+      - name: Get Image ID
+        id: get_image_id
+        run: |
+          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-rk.outputs.json).tags[0] }})
+          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
+          echo "Found image ID: $IMAGE_ID"
+
+      # 导出镜像为tar文件
+      - name: Save image to tar
+        run: |
+          docker save -o go2rtc_docker_rockchip_image.tar ${{ steps.get_image_id.outputs.image_id }}
+      
+      # 上传tar文件作为artifact
+      - name: Upload Docker Image Tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: go2rtc-docker-rockchip-image-tar
+          path: go2rtc_docker_rockchip_image.tar
