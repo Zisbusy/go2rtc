@@ -1,4 +1,4 @@
-name: Build and Download
+name: Build Only (No Push)
 
 on:
   workflow_dispatch:
@@ -8,156 +8,156 @@ on:
     tags:
       - 'v*'
 
+# jobs:
+#   build-binaries: # 完全移除此job，因为我们不需要编译Go二进制文件
+#     ...
+
 jobs:
-  build-binaries:
-    name: Build binaries
+  docker-master:
+    name: Build docker master
     runs-on: ubuntu-latest
-    env: { CGO_ENABLED: 0 }
-    outputs:
-      # 定义输出，如果需要在其他地方引用构建状态
-      build_status: success
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
-
-      - name: Build go2rtc_win64
-        env: { GOOS: windows, GOARCH: amd64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_win64.exe
-      - name: Upload go2rtc_win64
-        uses: actions/upload-artifact@v4
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          name: go2rtc_win64
-          path: go2rtc_win64.exe
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},enable=false
+            type=match,pattern=v(.*),group=1
 
-      - name: Build go2rtc_win32
-        env: { GOOS: windows, GOARCH: 386 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_win32.exe
-      - name: Upload go2rtc_win32
-        uses: actions/upload-artifact@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 移除登录步骤，因为不推送
+      # - name: Login to GitHub Container Registry
+      #   if: github.event_name == 'push'
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build only (no push)
+        uses: docker/build-push-action@v5
         with:
-          name: go2rtc_win32
-          path: go2rtc_win32.exe
+          context: .
+          file: docker/Dockerfile
+          platforms: |
+            linux/amd64
+            linux/386
+            linux/arm/v6
+            linux/arm/v7
+            linux/arm64/v8
+          # 关键更改：始终设置 push: false
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build go2rtc_win_arm64
-        env: { GOOS: windows, GOARCH: arm64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_win_arm64.exe
-      - name: Upload go2rtc_win_arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_win_arm64
-          path: go2rtc_win_arm64.exe
-
-      - name: Build go2rtc_linux_amd64
-        env: { GOOS: linux, GOARCH: amd64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_amd64
-      - name: Upload go2rtc_linux_amd64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_amd64
-          path: go2rtc_linux_amd64
-
-      - name: Build go2rtc_linux_i386
-        env: { GOOS: linux, GOARCH: 386 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_i386
-      - name: Upload go2rtc_linux_i386
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_i386
-          path: go2rtc_linux_i386
-
-      - name: Build go2rtc_linux_arm64
-        env: { GOOS: linux, GOARCH: arm64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_arm64
-      - name: Upload go2rtc_linux_arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_arm64
-          path: go2rtc_linux_arm64
-
-      - name: Build go2rtc_linux_arm
-        env: { GOOS: linux, GOARCH: arm, GOARM: 7 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_arm
-      - name: Upload go2rtc_linux_arm
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_arm
-          path: go2rtc_linux_arm
-
-      - name: Build go2rtc_linux_armv6
-        env: { GOOS: linux, GOARCH: arm, GOARM: 6 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_armv6
-      - name: Upload go2rtc_linux_armv6
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_armv6
-          path: go2rtc_linux_armv6
-
-      - name: Build go2rtc_linux_mipsel
-        env: { GOOS: linux, GOARCH: mipsle }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_linux_mipsel
-      - name: Upload go2rtc_linux_mipsel
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_linux_mipsel
-          path: go2rtc_linux_mipsel
-
-      - name: Build go2rtc_mac_amd64
-        env: { GOOS: darwin, GOARCH: amd64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_mac_amd64
-      - name: Upload go2rtc_mac_amd64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_mac_amd64
-          path: go2rtc_mac_amd64
-
-      - name: Build go2rtc_mac_arm64
-        env: { GOOS: darwin, GOARCH: arm64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_mac_arm64
-      - name: Upload go2rtc_mac_arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_mac_arm64
-          path: go2rtc_mac_arm64
-
-      - name: Build go2rtc_freebsd_amd64
-        env: { GOOS: freebsd, GOARCH: amd64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_freebsd_amd64
-      - name: Upload go2rtc_freebsd_amd64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_freebsd_amd64
-          path: go2rtc_freebsd_amd64
-
-      - name: Build go2rtc_freebsd_arm64
-        env: { GOOS: freebsd, GOARCH: arm64 }
-        run: go build -ldflags "-s -w" -trimpath -o go2rtc_freebsd_arm64
-      - name: Upload go2rtc_freebsd_arm64
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc_freebsd_arm64
-          path: go2rtc_freebsd_arm64
-
-  # 可选：添加一个合并所有artifact的job，方便一次性下载所有平台的文件
-  package-all:
-    name: Package all binaries
-    needs: build-binaries
+  docker-hardware:
+    name: Build docker hardware
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        
-      - name: Create archive
-        run: |
-          mkdir -p all-platforms-binaries
-          find . -name "go2rtc_*" -type f -exec cp {} all-platforms-binaries/ \;
-          tar -czf all-platforms-binaries.tar.gz all-platforms-binaries/
-          
-      - name: Upload all binaries archive
-        uses: actions/upload-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker meta
+        id: meta-hw
+        uses: docker/metadata-action@v5
         with:
-          name: all-platforms-binaries
-          path: all-platforms-binaries.tar.gz
+          images: |
+            ghcr.io/${{ github.repository }}
+          flavor: |
+            suffix=-hardware,onlatest=true
+            latest=auto
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},enable=false
+            type=match,pattern=v(.*),group=1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 移除登录步骤，因为不推送
+      # - name: Login to GitHub Container Registry
+      #   if: github.event_name == 'push'
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build only (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/hardware.Dockerfile
+          platforms: linux/amd64
+          # 关键更改：始终设置 push: false
+          push: false
+          tags: ${{ steps.meta-hw.outputs.tags }}
+          labels: ${{ steps.meta-hw.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-rockchip:
+    name: Build docker rockchip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker meta
+        id: meta-rk
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          flavor: |
+            suffix=-rockchip,onlatest=true
+            latest=auto
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},enable=false
+            type=match,pattern=v(.*),group=1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 移除登录步骤，因为不推送
+      # - name: Login to GitHub Container Registry
+      #   if: github.event_name == 'push'
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build only (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/rockchip.Dockerfile
+          platforms: linux/arm64
+          # 关键更改：始终设置 push: false
+          push: false
+          tags: ${{ steps.meta-rk.outputs.tags }}
+          labels: ${{ steps.meta-rk.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
