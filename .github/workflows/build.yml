@@ -1,5 +1,6 @@
-name: Build and Export Docker Images Per Platform (for Testing)
+name: Build and Push
 
+# 触发工作流的事件
 on:
   workflow_dispatch:
   push:
@@ -9,27 +10,75 @@ on:
       - 'v*'
 
 jobs:
-  # 定义一个矩阵，为每个平台创建一个job
-  docker-master-per-platform:
-    name: Build and export docker master (${{ matrix.platform }})
+  # Job 1: 编译各种操作系统的二进制文件 (保持不变)
+  build-binaries:
+    name: Build binaries
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        platform:
-          - linux/amd64
-          - linux/386
-          - linux/arm/v6
-          - linux/arm/v7
-          - linux/arm64/v8
+    env: { CGO_ENABLED: 0 }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+
+      # --- Linux 平台构建 ---
+      - name: Build go2rtc_linux_amd64
+        env: { GOOS: linux, GOARCH: amd64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_amd64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_amd64, path: go2rtc }
+
+      - name: Build go2rtc_linux_arm64
+        env: { GOOS: linux, GOARCH: arm64 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_arm64
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_arm64, path: go2rtc }
+
+      # ARM v7 (32位)
+      - name: Build go2rtc_linux_arm
+        env: { GOOS: linux, GOARCH: arm, GOARM: 7 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_arm
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_arm, path: go2rtc }
+
+      # ARM v6 (32位)
+      - name: Build go2rtc_linux_armv6
+        env: { GOOS: linux, GOARCH: arm, GOARM: 6 }
+        run: go build -ldflags "-s -w" -trimpath
+      - name: Upload go2rtc_linux_armv6
+        uses: actions/upload-artifact@v4
+        with: { name: go2rtc_linux_armv6, path: go2rtc }
+
+  # Job 2: 构建标准 Docker 镜像 (修改版：单架构 Tar 包)
+  docker-master:
+    name: Build docker ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    # 定义矩阵，包含所有需要构建的目标平台
+    strategy:
+      matrix:
+        platform: [
+          linux/amd64,
+          linux/386,
+          linux/arm/v6,
+          linux/arm/v7,
+          linux/arm64/v8
+        ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 自动推断镜像标签
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
+            name=${{ github.repository }},enable=${{ github.event.repository.fork == false }}
             ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=branch
@@ -42,48 +91,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建单个平台镜像，然后加载到本地
-      - name: Build single-platform image (no push)
-        id: build_image
+      # 核心修改：构建并导出为 tar 文件
+      - name: Build and Export Tar
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
-          platforms: ${{ matrix.platform }} # 只构建一个平台
+          # 使用矩阵变量指定单一平台
+          platforms: ${{ matrix.platform }}
+          # 关闭推送
           push: false
-          load: true # 现在可以安全地使用load，因为是单一平台
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # 关键配置：导出为 Docker tar 包格式
+          outputs: type=docker,dest=/tmp/image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 获取构建的镜像ID
-      - name: Get Image ID
-        id: get_image_id
-        run: |
-          # 从buildx metadata file中获取镜像ID，更可靠
-          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta.outputs.json).tags[0] }})
-          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "Found image ID: $IMAGE_ID for platform ${{ matrix.platform }}"
-
-      # 根据平台命名tar文件
-      - name: Save image to tar
-        run: |
-          PLATFORM_TAG=${{ matrix.platform }}
-          # 替换斜杠为下划线，使其成为有效的文件名
-          FILENAME_PLATFORM=$(echo "$PLATFORM_TAG" | sed 's/\//_/g')
-          docker save -o go2rtc_docker_master_${FILENAME_PLATFORM}.tar ${{ steps.get_image_id.outputs.image_id }}
-      
-      # 上传tar文件作为artifact，名称包含平台信息
-      - name: Upload Docker Image Tar
+      # 上传产物
+      # 注意：artifact 名称中包含平台信息，以便区分
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: go2rtc-docker-master-${{ matrix.platform }}-tar
-          path: go2rtc_docker_master_*.tar
+          name: docker-image-${{ matrix.platform }}
+          path: /tmp/image.tar
 
-  # 其他两个Dockerfile保持不变，因为它们已经是单平台的
+  # Job 3: 构建包含硬件加速支持的 Docker 镜像 (保持不变，或按需修改)
   docker-hardware:
-    name: Build and export docker hardware
+    name: Build docker hardware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,6 +128,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
+            name=${{ github.repository }},enable=${{ github.event.repository.fork == false }}
             ghcr.io/${{ github.repository }}
           flavor: |
             suffix=-hardware,onlatest=true
@@ -109,91 +144,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (no push)
-        id: build_image
+      - name: Login to DockerHub
+        if: github.event_name == 'push' && github.event.repository.fork == false
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/hardware.Dockerfile
           platforms: linux/amd64
-          push: false
-          load: true # 单平台，安全
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-hw.outputs.tags }}
           labels: ${{ steps.meta-hw.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Get Image ID
-        id: get_image_id
-        run: |
-          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-hw.outputs.json).tags[0] }})
-          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "Found image ID: $IMAGE_ID"
-
-      - name: Save image to tar
-        run: |
-          docker save -o go2rtc_docker_hardware_image.tar ${{ steps.get_image_id.outputs.image_id }}
-      
-      - name: Upload Docker Image Tar
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc-docker-hardware-image-tar
-          path: go2rtc_docker_hardware_image.tar
-
-  docker-rockchip:
-    name: Build and export docker rockchip
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Docker meta
-        id: meta-rk
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository }}
-          flavor: |
-            suffix=-rockchip,onlatest=true
-            latest=auto
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}},enable=false
-            type=match,pattern=v(.*),group=1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image (no push)
-        id: build_image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/rockchip.Dockerfile
-          platforms: linux/arm64
-          push: false
-          load: true # 单平台，安全
-          tags: ${{ steps.meta-rk.outputs.tags }}
-          labels: ${{ steps.meta-rk.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Get Image ID
-        id: get_image_id
-        run: |
-          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-rk.outputs.json).tags[0] }})
-          echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "Found image ID: $IMAGE_ID"
-
-      - name: Save image to tar
-        run: |
-          docker save -o go2rtc_docker_rockchip_image.tar ${{ steps.get_image_id.outputs.image_id }}
-      
-      - name: Upload Docker Image Tar
-        uses: actions/upload-artifact@v4
-        with:
-          name: go2rtc-docker-rockchip-image-tar
-          path: go2rtc_docker_rockchip_image.tar
