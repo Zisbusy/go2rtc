@@ -61,6 +61,8 @@ jobs:
   docker-master:
     name: Build docker master
     runs-on: ubuntu-latest
+    outputs:
+      image_tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -86,9 +88,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建并推送
-      - name: Build and push
-        id: build-and-push
+      # 构建并推送多架构镜像
+      - name: Build and push multi-arch image
+        id: build-multi-arch
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -100,27 +102,46 @@ jobs:
             linux/arm/v6
             linux/arm/v7
             linux/arm64/v8
-          outputs: type=docker,dest=/tmp/go2rtc-image.tar
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 导出Docker镜像为tar文件并作为artifact上传
-      - name: Export Docker image as tar
+      # 为每个平台单独构建并导出为tar文件
+      - name: Build and export AMD64 image
         if: github.event_name != 'pull_request'
         run: |
-          mkdir -p /tmp/docker-images
-          docker image ls --format "{{.Repository}}:{{.Tag}}" | grep -E "${{ github.repository }}|ghcr.io/${{ github.repository }}" | while read image; do
-            filename=$(echo "$image" | sed 's/[\/:]/_/g').tar
-            docker save -o "/tmp/docker-images/$filename" "$image"
-            echo "Exported $image to $filename"
-          done
+          docker buildx build --platform linux/amd64 -t go2rtc-amd64:${{ github.sha }} -f docker/Dockerfile --load .
+          docker save -o /tmp/go2rtc-linux-amd64.tar go2rtc-amd64:${{ github.sha }}
 
-      - name: Upload Docker image as artifact
+      - name: Build and export ARM64 image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx build --platform linux/arm64 -t go2rtc-arm64:${{ github.sha }} -f docker/Dockerfile --load .
+          docker save -o /tmp/go2rtc-linux-arm64.tar go2rtc-arm64:${{ github.sha }}
+
+      - name: Build and export ARMv7 image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx build --platform linux/arm/v7 -t go2rtc-armv7:${{ github.sha }} -f docker/Dockerfile --load .
+          docker save -o /tmp/go2rtc-linux-armv7.tar go2rtc-armv7:${{ github.sha }}
+
+      - name: Build and export ARMv6 image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx build --platform linux/arm/v6 -t go2rtc-armv6:${{ github.sha }} -f docker/Dockerfile --load .
+          docker save -o /tmp/go2rtc-linux-armv6.tar go2rtc-armv6:${{ github.sha }}
+
+      - name: Build and export 386 image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker buildx build --platform linux/386 -t go2rtc-386:${{ github.sha }} -f docker/Dockerfile --load .
+          docker save -o /tmp/go2rtc-linux-386.tar go2rtc-386:${{ github.sha }}
+
+      - name: Upload Docker images as artifacts
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: docker-images-tar
-          path: /tmp/docker-images/
+          path: /tmp/go2rtc-*.tar
