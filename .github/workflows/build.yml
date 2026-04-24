@@ -1,4 +1,4 @@
-name: Build and Export Docker Images (for Testing)
+name: Build and Export Docker Images Per Platform (for Testing)
 
 on:
   workflow_dispatch:
@@ -9,10 +9,18 @@ on:
       - 'v*'
 
 jobs:
-
-  docker-master:
-    name: Build and export docker master
+  # 定义一个矩阵，为每个平台创建一个job
+  docker-master-per-platform:
+    name: Build and export docker master (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/386
+          - linux/arm/v6
+          - linux/arm/v7
+          - linux/arm64/v8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,49 +42,46 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建镜像，但不推送
-      - name: Build image (no push)
+      # 构建单个平台镜像，然后加载到本地
+      - name: Build single-platform image (no push)
         id: build_image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
-          platforms: |
-            linux/amd64
-            linux/386
-            linux/arm/v6
-            linux/arm/v7
-            linux/arm64/v8
+          platforms: ${{ matrix.platform }} # 只构建一个平台
           push: false
-          # 输出到本地docker daemon，以便后续save
-          load: true 
+          load: true # 现在可以安全地使用load，因为是单一平台
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 获取构建的镜像ID，用于docker save
+      # 获取构建的镜像ID
       - name: Get Image ID
         id: get_image_id
         run: |
-          # 假设镜像标签是唯一的，或者我们只关心一个tag
-          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta.outputs.json).tags[0] }})
+          # 从buildx metadata file中获取镜像ID，更可靠
+          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta.outputs.json).tags[0] }})
           echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "Found image ID: $IMAGE_ID"
+          echo "Found image ID: $IMAGE_ID for platform ${{ matrix.platform }}"
 
-      # 导出镜像为tar文件
+      # 根据平台命名tar文件
       - name: Save image to tar
         run: |
-          # 使用获取到的镜像ID进行导出，避免tag冲突
-          docker save -o go2rtc_docker_master_image.tar ${{ steps.get_image_id.outputs.image_id }}
+          PLATFORM_TAG=${{ matrix.platform }}
+          # 替换斜杠为下划线，使其成为有效的文件名
+          FILENAME_PLATFORM=$(echo "$PLATFORM_TAG" | sed 's/\//_/g')
+          docker save -o go2rtc_docker_master_${FILENAME_PLATFORM}.tar ${{ steps.get_image_id.outputs.image_id }}
       
-      # 上传tar文件作为artifact
+      # 上传tar文件作为artifact，名称包含平台信息
       - name: Upload Docker Image Tar
         uses: actions/upload-artifact@v4
         with:
-          name: go2rtc-docker-master-image-tar
-          path: go2rtc_docker_master_image.tar
+          name: go2rtc-docker-master-${{ matrix.platform }}-tar
+          path: go2rtc_docker_master_*.tar
 
+  # 其他两个Dockerfile保持不变，因为它们已经是单平台的
   docker-hardware:
     name: Build and export docker hardware
     runs-on: ubuntu-latest
@@ -104,7 +109,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建镜像，但不推送
       - name: Build image (no push)
         id: build_image
         uses: docker/build-push-action@v5
@@ -113,26 +117,23 @@ jobs:
           file: docker/hardware.Dockerfile
           platforms: linux/amd64
           push: false
-          load: true
+          load: true # 单平台，安全
           tags: ${{ steps.meta-hw.outputs.tags }}
           labels: ${{ steps.meta-hw.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 获取构建的镜像ID
       - name: Get Image ID
         id: get_image_id
         run: |
-          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-hw.outputs.json).tags[0] }})
+          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-hw.outputs.json).tags[0] }})
           echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
           echo "Found image ID: $IMAGE_ID"
 
-      # 导出镜像为tar文件
       - name: Save image to tar
         run: |
           docker save -o go2rtc_docker_hardware_image.tar ${{ steps.get_image_id.outputs.image_id }}
       
-      # 上传tar文件作为artifact
       - name: Upload Docker Image Tar
         uses: actions/upload-artifact@v4
         with:
@@ -166,7 +167,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 构建镜像，但不推送
       - name: Build image (no push)
         id: build_image
         uses: docker/build-push-action@v5
@@ -175,26 +175,23 @@ jobs:
           file: docker/rockchip.Dockerfile
           platforms: linux/arm64
           push: false
-          load: true
+          load: true # 单平台，安全
           tags: ${{ steps.meta-rk.outputs.tags }}
           labels: ${{ steps.meta-rk.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 获取构建的镜像ID
       - name: Get Image ID
         id: get_image_id
         run: |
-          IMAGE_ID=$(docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-rk.outputs.json).tags[0] }})
+          IMAGE_ID=$(cat /home/runner/work/_temp/docker-actions-toolkit-*/build-iidfile-* 2>/dev/null | head -n 1 || docker images --format "{{.ID}}" ${{ fromJSON(steps.meta-rk.outputs.json).tags[0] }})
           echo "image_id=$IMAGE_ID" >> $GITHUB_OUTPUT
           echo "Found image ID: $IMAGE_ID"
 
-      # 导出镜像为tar文件
       - name: Save image to tar
         run: |
           docker save -o go2rtc_docker_rockchip_image.tar ${{ steps.get_image_id.outputs.image_id }}
       
-      # 上传tar文件作为artifact
       - name: Upload Docker Image Tar
         uses: actions/upload-artifact@v4
         with:
