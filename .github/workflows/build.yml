@@ -1,6 +1,9 @@
 name: Build and Push
 
-# 触发工作流的事件
+# 触发工作流的事件：
+# 1. 手动触发 (workflow_dispatch)
+# 2. 推送到 master 分支
+# 3. 推送带有 v* 前缀的标签 (如 v1.0.0)
 on:
   workflow_dispatch:
   push:
@@ -10,11 +13,11 @@ on:
       - 'v*'
 
 jobs:
-  # Job 1: 编译各种操作系统的二进制文件 (保持不变)
+  # Job 1: 编译各种操作系统的二进制文件
   build-binaries:
     name: Build binaries
     runs-on: ubuntu-latest
-    env: { CGO_ENABLED: 0 }
+    env: { CGO_ENABLED: 0 } # 禁用 CGO 以确保静态编译
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +49,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: go2rtc_linux_arm, path: go2rtc }
 
-      # ARM v6 (32位)
+      # ARM v6 (32位，常用于树莓派1/Zero)
       - name: Build go2rtc_linux_armv6
         env: { GOOS: linux, GOARCH: arm, GOARM: 6 }
         run: go build -ldflags "-s -w" -trimpath
@@ -54,31 +57,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: go2rtc_linux_armv6, path: go2rtc }
 
-  # Job 2: 构建标准 Docker 镜像 (修改版：单架构 Tar 包)
+  # Job 2: 构建标准 Docker 镜像 (多架构)
   docker-master:
-    name: Build docker ${{ matrix.platform }}
+    name: Build docker master
     runs-on: ubuntu-latest
-    # 定义矩阵，包含所有需要构建的目标平台
-    strategy:
-      matrix:
-        platform: [
-          linux/amd64,
-          linux/386,
-          linux/arm/v6,
-          linux/arm/v7,
-          linux/arm64/v8
-        ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 自动推断镜像标签
+      # 自动推断镜像标签和元数据
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
+            # 如果不是 Fork 的仓库，则推送到 DockerHub
             name=${{ github.repository }},enable=${{ github.event.repository.fork == false }}
+            # 始终推送到 GitHub Container Registry (GHCR)
             ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=branch
@@ -91,82 +86,41 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 核心修改：构建并导出为 tar 文件
-      - name: Build and Export Tar
-        id: build
+      # 构建并推送
+      - name: Build and push
+        id: build-and-push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
-          # 使用矩阵变量指定单一平台
-          platforms: ${{ matrix.platform }}
-          # 关闭推送
-          push: false
-          # 关键配置：导出为 Docker tar 包格式
-          outputs: type=docker,dest=/tmp/image.tar
+          # 支持多种架构
+          platforms: |
+            linux/amd64
+            linux/386
+            linux/arm/v6
+            linux/arm/v7
+            linux/arm64/v8
+          outputs: type=docker,dest=/tmp/go2rtc-image.tar
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 上传产物
-      # 注意：artifact 名称中包含平台信息，以便区分
-      - name: Upload Artifact
+      # 导出Docker镜像为tar文件并作为artifact上传
+      - name: Export Docker image as tar
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/docker-images
+          docker image ls --format "{{.Repository}}:{{.Tag}}" | grep -E "${{ github.repository }}|ghcr.io/${{ github.repository }}" | while read image; do
+            filename=$(echo "$image" | sed 's/[\/:]/_/g').tar
+            docker save -o "/tmp/docker-images/$filename" "$image"
+            echo "Exported $image to $filename"
+          done
+
+      - name: Upload Docker image as artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image-${{ matrix.platform }}
-          path: /tmp/image.tar
-
-  # Job 3: 构建包含硬件加速支持的 Docker 镜像 (保持不变，或按需修改)
-  docker-hardware:
-    name: Build docker hardware
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Docker meta
-        id: meta-hw
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            name=${{ github.repository }},enable=${{ github.event.repository.fork == false }}
-            ghcr.io/${{ github.repository }}
-          flavor: |
-            suffix=-hardware,onlatest=true
-            latest=auto
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}},enable=false
-            type=match,pattern=v(.*),group=1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to DockerHub
-        if: github.event_name == 'push' && github.event.repository.fork == false
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name == 'push'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/hardware.Dockerfile
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta-hw.outputs.tags }}
-          labels: ${{ steps.meta-hw.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: docker-images-tar
+          path: /tmp/docker-images/
